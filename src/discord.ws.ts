@@ -134,53 +134,72 @@ export class WsMessage {
   }
   private async messageCreate(message: any) {
     const { embeds, id, nonce, components, attachments } = message;
+    let isHandled = false; // Flag to track if the message was processed as a non-done state
+
+    // --- Step 1: Handle known non-done states (errors, prompts, warnings) ---
     if (nonce) {
-      // this.log("waiting start image or info or error");
-      this.updateMjEventIdByNonce(id, nonce);
-      if (embeds?.[0]) {
-        const { color, description, title } = embeds[0];
-        this.log("embeds[0].color", color);
-        switch (color) {
-          case 16711680: //error
-            if (title == "Action needed to continue") {
-              return this.continue(message);
-            } else if (title == "Pending mod message") {
-              return this.continue(message);
-            }
+        // Always associate ID with nonce if nonce exists
+        this.updateMjEventIdByNonce(id, nonce);
 
-            const error = new Error(description);
-            this.EventError(id, error);
-            return;
+        if (embeds?.[0]) {
+            const { color, description, title } = embeds[0];
+            this.log(`messageCreate with Nonce: ${nonce}, ID: ${id}, Title: ${title}, Color: ${color}`);
 
-          case 16776960: //warning
-            console.warn(description);
-            break;
+            switch (color) {
+                case 16711680: // Red - Error or Action Needed
+                    if (title == "Action needed to continue" || title == "Pending mod message") {
+                        this.log(`Action/Pending Mod detected for Nonce: ${nonce}`);
+                        await this.continue(message); // Assuming continue handles async and returns appropriately
+                        isHandled = true;
+                    } else if (title?.includes("Invalid")) {
+                        this.log(`Invalid Parameter Error detected for Nonce: ${nonce}`);
+                        const invalidError = new Error(description || title || "Invalid Parameter");
+                        this.EventError(id, invalidError); // Use ID as nonce might not map correctly if update failed? Check EventError logic.
+                        isHandled = true;
+                    } else {
+                         // Potentially other errors - log and maybe treat as error
+                         this.log(`Generic Error Embed (Color Red) detected for Nonce: ${nonce}`);
+                         const genericError = new Error(description || title || "Unknown Error");
+                         this.EventError(id, genericError);
+                         isHandled = true;
+                    }
+                    break; // Break from switch case 16711680
 
-          default:
-            if (
-              title?.includes("continue") &&
-              description?.includes("verify you're human")
-            ) {
-              //verify human
-              await this.verifyHuman(message);
-              return;
-            }
+                case 16776960: // Yellow - Warning
+                    console.warn(`Warning received for Nonce ${nonce}: ${description}`);
+                    // Warnings usually don't stop the process, so don't set isHandled = true unless required
+                    break; // Break from switch case 16776960
 
-            if (title?.includes("Invalid")) {
-              //error
-              const error = new Error(description);
-              this.EventError(id, error);
-              return;
+                default: // Other colors or no specific color match
+                    if (title?.includes("continue") && description?.includes("verify you're human")) {
+                        this.log(`Verification Required detected for Nonce: ${nonce}`);
+                        await this.verifyHuman(message);
+                        isHandled = true;
+                    }
+                    // Add checks for other known non-done embed patterns here if necessary
+                    break; // Break from switch default
             }
         }
-      }
     }
 
-    if (!nonce && attachments?.length > 0 && components?.length > 0) {
-      this.done(message);
-      return;
+    // If handled as a specific non-done state above, return early.
+    if (isHandled) {
+        this.log(`Message Handled (Non-Done State) for ID: ${id}, Nonce: ${nonce}. Returning.`);
+        return;
     }
 
+    // --- Step 2: Check for "Done" state (Attachments + Components) ---
+    // This runs if the message wasn't identified and handled as a specific error/prompt above.
+    // It now works regardless of whether nonce is present.
+    if (attachments?.length > 0 && components?.length > 0) {
+        this.log(`"Done" state detected (Attachments & Components present) for ID: ${id}, Nonce: ${nonce || 'N/A'}. Calling done().`);
+        this.done(message);
+        return; // Important: Return after calling done()
+    }
+
+    // --- Step 3: Fallback to messageUpdate ---
+    // If it wasn't a known non-done state and didn't meet the "Done" criteria.
+    this.log(`No specific handler or "Done" state matched for ID: ${id}, Nonce: ${nonce || 'N/A'}. Passing to messageUpdate.`);
     this.messageUpdate(message);
   }
 
